@@ -12,6 +12,9 @@ stayed off on several models while the Philips app got the notification (issues
   `{"v":"4.0","cmd":"ipc_motion","alarm":true,"time":1783686591,"files":[...]}`
   (from the diagnostics on #61). Its noise alert uses the same shape with
   `cmd: ipc_bang` (from the diagnostics on #42).
+- The SCD860 (`hduoyookoe1b3in0`) has no motion detection. Each sound alert is a
+  LAN push of DPS 141 set to `"1"`, the same value every time, which the cloud
+  then keeps as the stored state (the log and dumps on #59).
 
 DPS 212 carries its own timestamp, which makes it usable on the cloud poll as
 well: the value sticks around in device state, so freshness comes from the
@@ -61,6 +64,16 @@ CRY_COMMANDS = frozenset({"ipc_cry", "ipc_baby_cry"})
 # Alarm commands already reported, so an unmapped one is logged once per run
 # instead of on every poll.
 _seen_unknown_commands: set[str] = set()
+
+# Values of DPS 141 that announce a sound alert: `decibel_upload` on the SCD973
+# and SCD923 family, `"1"` on the SCD860. Both only count when they arrive as a
+# push, because the value stays in the stored state afterwards.
+DECIBEL_EVENT_VALUES = frozenset({"decibel_upload", "1"})
+
+
+def is_decibel_event(value: object) -> bool:
+    """Whether a pushed DPS 141 value is a sound alert."""
+    return isinstance(value, str) and value.strip() in DECIBEL_EVENT_VALUES
 
 
 def decode_event_payload(raw: object) -> dict | None:

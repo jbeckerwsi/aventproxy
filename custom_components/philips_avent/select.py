@@ -18,6 +18,7 @@ from .const import (
     DPS_LULLABY_MODE,
     DPS_LULLABY_TIMER,
     DPS_LULLABY_TIMER_SWITCH,
+    DPS_LULLABY_TRACK,
     LULLABY_TRACK_MAP,
     LULLABY_TRACKS,
     TIMER_OPTIONS,
@@ -25,6 +26,7 @@ from .const import (
     lullaby_track_id,
 )
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import dp_enum_range, lullaby_index_label, lullaby_is_switch
 from .entity import build_device_info
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,6 +41,11 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        if lullaby_is_switch(coordinator.device_info):
+            # SCD860: a track index on DPS 202, and no play-mode labels or
+            # timers known for it, so only the track picker.
+            entities.append(AventLullabyIndexSelect(coordinator, cam_id))
+            continue
         entities.append(AventLullabySelect(coordinator, cam_id))
         entities.append(AventPlayModeSelect(coordinator, cam_id))
         entities.append(AventTimerSelect(
@@ -93,6 +100,39 @@ class AventLullabySelect(CoordinatorEntity, SelectEntity):
         self.coordinator.data["248"] = json.dumps(
             {"bizcode": "phi-no-bm", "id": track_id, "errcode": 0}
         )
+        self.async_write_ha_state()
+
+
+class AventLullabyIndexSelect(CoordinatorEntity, SelectEntity):
+    """Lullaby track on the SCD860: DPS 202 holds an index ("0"-"9"), shown 1-based.
+
+    The track names are not known, so the options are numbers. Selecting a track
+    does not start playback; the lullaby switch does.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "lullaby_track"
+    _attr_icon = "mdi:music-note"
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(coordinator)
+        self._cam_id = cam_id
+        self._attr_unique_id = f"{cam_id}_lullaby_track"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+        self._values = dp_enum_range(coordinator.device_info, DPS_LULLABY_TRACK) or [str(i) for i in range(10)]
+        self._attr_options = [lullaby_index_label(v) for v in self._values]
+
+    @property
+    def current_option(self) -> str | None:
+        value = (self.coordinator.data or {}).get(DPS_LULLABY_TRACK)
+        return lullaby_index_label(value) if value in self._values else None
+
+    async def async_select_option(self, option: str) -> None:
+        value = next((v for v in self._values if lullaby_index_label(v) == option), None)
+        if value is None:
+            return
+        await self.coordinator.set_dps({DPS_LULLABY_TRACK: value})
+        self.coordinator.data[DPS_LULLABY_TRACK] = value
         self.async_write_ha_state()
 
 

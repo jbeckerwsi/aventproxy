@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,6 +11,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfTemperature,
@@ -23,11 +25,13 @@ from . import senseiq
 from .const import (
     DOMAIN,
     DPS_DEVICE_ERRORS,
+    DPS_HUMIDITY,
     DPS_SENSEIQ_STATUS,
     DPS_SLEEP_SESSION,
     DPS_TEMPERATURE,
 )
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import CODE_HUMIDITY, dp_means
 from .entity import add_entities_when_ready, build_device_info, dps_present
 
 SLEEP_STAGE_OPTIONS = list(senseiq.SLEEP_STAGES)
@@ -45,8 +49,24 @@ async def async_setup_entry(
         add_entities_when_ready(
             coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
         )
+        # DPS 208 is humidity only where the schema says so (SCD860); the SCD973
+        # family reports °F on the same id.
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (
+                partial(_humidity_ready, coordinator),
+                partial(_one, AventHumiditySensor, coordinator, cam_id),
+            ),
+        ], entry.async_on_unload)
 
     async_add_entities(entities)
+
+
+def _humidity_ready(coordinator: PhilipsAventCoordinator, dps: dict) -> bool:
+    return dp_means(coordinator.device_info, dps, DPS_HUMIDITY, CODE_HUMIDITY)
+
+
+def _one(cls, coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
+    return [cls(coordinator, cam_id)]
 
 
 def _senseiq_sensors(coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
@@ -105,6 +125,27 @@ class AventTemperatureSensor(CoordinatorEntity, SensorEntity):
         dps = self.coordinator.data
         if dps and DPS_TEMPERATURE in dps:
             return dps[DPS_TEMPERATURE] / 100.0
+        return None
+
+
+class AventHumiditySensor(CoordinatorEntity, SensorEntity):
+    _attr_device_class = SensorDeviceClass.HUMIDITY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_has_entity_name = True
+    _attr_translation_key = "humidity"
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(coordinator)
+        self._cam_id = cam_id
+        self._attr_unique_id = f"{cam_id}_humidity"
+        self._attr_device_info = build_device_info(coordinator, cam_id)
+
+    @property
+    def native_value(self) -> float | None:
+        dps = self.coordinator.data
+        if dps and isinstance(dps.get(DPS_HUMIDITY), int | float):
+            return dps[DPS_HUMIDITY] / 100.0
         return None
 
 

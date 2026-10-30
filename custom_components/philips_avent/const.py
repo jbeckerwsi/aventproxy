@@ -47,11 +47,16 @@ DPS_LIGHT_TIMER = "240"
 DPS_LIGHT_TIMER_SWITCH = "241"
 DPS_TEMPERATURE = "207"
 DPS_TEMPERATURE_F = "208"
+# The same id is relative humidity x 100 on the SCD860 (schema code
+# `sensor_humidity`); dps_schema.py tells the two apart.
+DPS_HUMIDITY = "208"
 DPS_MOTION_SWITCH = "134"
 DPS_MOTION_SENSITIVITY = "106"
 DPS_SOUND_SWITCH = "139"
 DPS_SOUND_SENSITIVITY = "140"
 DPS_LULLABY_CONTROL = "201"
+# JSON track id on the SCD973 family, track index "0"-"9" on the SCD860.
+DPS_LULLABY_TRACK = "202"
 DPS_LULLABY_VOLUME = "209"
 DPS_LULLABY_MODE = "203"
 DPS_LULLABY_STATE = "246"

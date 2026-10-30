@@ -13,9 +13,11 @@ from .const import (
     DOMAIN,
     DPS_AWAKE_DELAY,
     DPS_BRIGHTNESS,
+    DPS_LIGHT_COLOR,
     DPS_LULLABY_VOLUME,
 )
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import CODE_NIGHTLIGHT_COLOR, dp_means, nightlight_brightness, with_nightlight_brightness
 from .entity import add_entities_when_ready, build_device_info, dps_present
 
 
@@ -26,7 +28,7 @@ async def async_setup_entry(
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
         entities.extend([
-            AventNumber(coordinator, cam_id, DPS_BRIGHTNESS, None, "mdi:brightness-6", 1, 100, 1, "%", translation_key="night_light_brightness"),
+            AventNightLightBrightness(coordinator, cam_id),
             AventNumber(coordinator, cam_id, DPS_LULLABY_VOLUME, None, "mdi:volume-medium", 1, 100, 1, "%", translation_key="lullaby_volume"),
         ])
         # SenseIQ: delay before the "baby awake" alert fires (seconds).
@@ -75,3 +77,35 @@ class AventNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.set_dps({self._dps_id: int(value)})
+
+
+class AventNightLightBrightness(AventNumber):
+    """Night light brightness: DPS 158 where the monitor has it, otherwise the V of
+    the HSV colour in DPS 204 (SCD860). The unique id stays the DPS 158 one, so
+    existing entities keep their history."""
+
+    def __init__(self, coordinator: PhilipsAventCoordinator, cam_id: str):
+        super().__init__(
+            coordinator, cam_id, DPS_BRIGHTNESS, None, "mdi:brightness-6", 1, 100, 1, "%",
+            translation_key="night_light_brightness",
+        )
+
+    def _uses_colour(self) -> bool:
+        dps = self.coordinator.data or {}
+        return DPS_BRIGHTNESS not in dps and dp_means(
+            self.coordinator.device_info, dps, DPS_LIGHT_COLOR, CODE_NIGHTLIGHT_COLOR
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        if self._uses_colour():
+            value = nightlight_brightness(self.coordinator.data.get(DPS_LIGHT_COLOR))
+            return float(value) if value is not None else None
+        return super().native_value
+
+    async def async_set_native_value(self, value: float) -> None:
+        if self._uses_colour():
+            colour = with_nightlight_brightness(self.coordinator.data.get(DPS_LIGHT_COLOR), value)
+            await self.coordinator.set_dps({DPS_LIGHT_COLOR: colour})
+            return
+        await super().async_set_native_value(value)

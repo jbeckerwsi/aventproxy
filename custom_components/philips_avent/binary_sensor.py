@@ -22,14 +22,17 @@ from .const import (
     DPS_ALERT_EVENT,
     DPS_CRY_DET_SWITCH,
     DPS_DECIBEL_EVENT,
+    DPS_LULLABY_CONTROL,
     DPS_LULLABY_STATE,
     DPS_MOTION_SWITCH,
     DPS_SENSEIQ_STATUS,
 )
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import lullaby_is_switch
 from .entity import add_entities_when_ready, build_device_info, dps_present
 from .events import (
     cry_event_timestamp,
+    is_decibel_event,
     is_new_event,
     motion_event_timestamp,
     sound_event_timestamp,
@@ -81,6 +84,9 @@ class AventLullabyPlaying(CoordinatorEntity, BinarySensorEntity):
         dps = self.coordinator.data
         if dps and DPS_LULLABY_STATE in dps:
             return dps[DPS_LULLABY_STATE] == "playing"
+        # The SCD860 has no playback state, only its on/off switch on DPS 201.
+        if dps and DPS_LULLABY_CONTROL in dps and lullaby_is_switch(self.coordinator.device_info):
+            return bool(dps[DPS_LULLABY_CONTROL])
         return None
 
 
@@ -207,10 +213,10 @@ class AventBabyDetected(CoordinatorEntity, BinarySensorEntity):
 class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):
     """Sound alerts, from whichever DPS the monitor reports them on.
 
-    Same split as motion: DPS 141 set to `decibel_upload` on the SCD973 and
-    SCD923 family, and the timestamped DPS 212 alarm record on the SCD951 and
-    SCD953 family, which names a noise alert `ipc_bang` (#42). Auto-clears after
-    ALERT_CLEAR_SECONDS.
+    Same split as motion: DPS 141 pushed as `decibel_upload` on the SCD973 and
+    SCD923 family or as `"1"` on the SCD860, and the timestamped DPS 212 alarm
+    record on the SCD951 and SCD953 family, which names a noise alert `ipc_bang`
+    (#42). Auto-clears after ALERT_CLEAR_SECONDS.
     """
 
     _attr_has_entity_name = True
@@ -246,7 +252,7 @@ class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):
             self._last_lan_update_sequence = sequence
             fresh_dps = self.coordinator.last_lan_dps
 
-        if fresh_dps and fresh_dps.get(DPS_DECIBEL_EVENT) == "decibel_upload":
+        if fresh_dps and is_decibel_event(fresh_dps.get(DPS_DECIBEL_EVENT)):
             return True
 
         dps = self.coordinator.data or {}

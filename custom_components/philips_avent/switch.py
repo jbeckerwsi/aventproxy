@@ -14,6 +14,7 @@ from .const import (
     DOMAIN,
     DPS_AWAKE_SWITCH,
     DPS_CRY_DET_SWITCH,
+    DPS_LULLABY_CONTROL,
     DPS_MOTION_SWITCH,
     DPS_NIGHT_LIGHT,
     DPS_PRIVACY_MODE,
@@ -21,6 +22,7 @@ from .const import (
     DPS_SOUND_SWITCH,
 )
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import lullaby_is_switch
 from .entity import add_entities_when_ready, build_device_info, dps_present
 
 
@@ -36,6 +38,12 @@ async def async_setup_entry(
             AventSwitch(coordinator, cam_id, DPS_SOUND_SWITCH, None, "mdi:ear-hearing", translation_key="sound_alert"),
             AventEnumSwitch(coordinator, cam_id, DPS_PRIVACY_MODE, None, "mdi:eye-off", translation_key="privacy_mode"),
         ])
+        # The SCD860 starts and stops its lullaby with an on/off switch on DPS 201
+        # instead of the play/pause buttons of the other models.
+        if lullaby_is_switch(coordinator.device_info):
+            entities.append(
+                AventSwitch(coordinator, cam_id, DPS_LULLABY_CONTROL, None, "mdi:music", translation_key="lullaby")
+            )
         # SenseIQ controls, each gated on its own data point so a monitor that
         # exposes only some of them still gets the right entities.
         add_entities_when_ready(coordinator, async_add_entities, [

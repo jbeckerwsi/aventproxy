@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, DPS_LULLABY_CONTROL
 from .coordinator import PhilipsAventCoordinator
+from .dps_schema import lullaby_is_switch
 from .entity import build_device_info
 
 
@@ -18,6 +19,10 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for cam_id, coordinator in data["coordinators"].items():
+        # On the SCD860 DPS 201 is an on/off switch (switch.py), which these
+        # play/pause/next commands would write strings into.
+        if lullaby_is_switch(coordinator.device_info):
+            continue
         for action, icon in [
             ("play", "mdi:play"),
             ("pause", "mdi:pause"),

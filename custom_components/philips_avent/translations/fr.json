@@ -75,6 +75,9 @@
       "temperature": {
         "name": "Température"
       },
+      "humidity": {
+        "name": "Humidité"
+      },
       "wifi_signal": {
         "name": "Signal WiFi"
       },
@@ -135,6 +138,9 @@
       }
     },
     "switch": {
+      "lullaby": {
+        "name": "Berceuse"
+      },
       "night_light": {
         "name": "Veilleuse"
       },
