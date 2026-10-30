@@ -47,6 +47,15 @@ type RTPForwarder struct {
 	// sequence numbers of everything after them.
 	videoSeqOffset uint16
 
+	// SourceTimestamps keeps the camera's own RTP timestamps, rebased to
+	// start at zero, instead of restamping from the wall clock. The imm
+	// transport carries real per-frame timestamps but delivers frames in
+	// bursts, where wall-clock stamping gives several frames the same time.
+	SourceTimestamps bool
+	videoSrc         sourceClock
+	audioSrc         sourceClock
+	videoWallStart   time.Time
+
 	OnBackchannelAudio func(*rtp.Packet)
 }
 
@@ -340,7 +349,14 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 		return
 	}
 
-	packet.Timestamp = rf.videoTs.timestamp(packet.Marker, 90000)
+	if rf.SourceTimestamps {
+		if rf.videoWallStart.IsZero() {
+			rf.videoWallStart = time.Now()
+		}
+		packet.Timestamp = rf.videoSrc.rebase(packet.Timestamp, 0)
+	} else {
+		packet.Timestamp = rf.videoTs.timestamp(packet.Marker, 90000)
+	}
 	packet.SequenceNumber += rf.videoSeqOffset
 
 	nalType := rf.getNALType(packet)
@@ -434,12 +450,22 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 		return
 	}
 
-	// Rebase timestamp to wall clock (8kHz for PCMU)
-	if !rf.audioTsStarted {
-		rf.audioTimeStart = time.Now()
-		rf.audioTsStarted = true
+	if rf.SourceTimestamps {
+		// Line audio up with video: its first packet sits as far into the
+		// stream as it arrived after the first video packet.
+		var offset uint32
+		if !rf.videoWallStart.IsZero() {
+			offset = rtpTicks(time.Since(rf.videoWallStart), 8000)
+		}
+		packet.Timestamp = rf.audioSrc.rebase(packet.Timestamp, offset)
+	} else {
+		// Rebase timestamp to wall clock (8kHz for PCMU)
+		if !rf.audioTsStarted {
+			rf.audioTimeStart = time.Now()
+			rf.audioTsStarted = true
+		}
+		packet.Timestamp = rtpTicks(time.Since(rf.audioTimeStart), 8000)
 	}
-	packet.Timestamp = rtpTicks(time.Since(rf.audioTimeStart), 8000)
 
 	// Serialize packet
 	data, err := packet.Marshal()
@@ -628,6 +654,21 @@ func (c *frameClock) timestamp(marker bool, clockRate int) uint32 {
 	}
 	c.open = !marker
 	return c.frameTs
+}
+
+// sourceClock rebases a source's RTP timestamps so the first one lands on
+// start; differences between packets are kept as the source made them.
+type sourceClock struct {
+	started bool
+	base    uint32
+}
+
+func (c *sourceClock) rebase(ts, start uint32) uint32 {
+	if !c.started {
+		c.started = true
+		c.base = ts - start
+	}
+	return ts - c.base
 }
 
 // rtpTicks converts elapsed time to RTP clock ticks, wrapping at 2^32 the way

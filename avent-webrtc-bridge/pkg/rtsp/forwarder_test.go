@@ -134,3 +134,44 @@ func TestForwardVideoInjectsParameterSetsInOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardVideoKeepsSourceTimestamps(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	rf := NewRTPForwarder()
+	rf.SourceTimestamps = true
+	if err := rf.AddTCPClient("s1", server, 0, 2, 4); err != nil {
+		t.Fatalf("add client: %v", err)
+	}
+
+	// Three frames 33 ms apart that arrive back to back, as imm delivers them.
+	send := []*rtp.Packet{
+		{Header: rtp.Header{SequenceNumber: 1, Timestamp: 1_000_000, Marker: true}, Payload: []byte{0x41, 0x01}},
+		{Header: rtp.Header{SequenceNumber: 2, Timestamp: 1_002_970, Marker: true}, Payload: []byte{0x41, 0x02}},
+		{Header: rtp.Header{SequenceNumber: 3, Timestamp: 1_005_940, Marker: true}, Payload: []byte{0x41, 0x03}},
+	}
+	done := make(chan []*rtp.Packet)
+	go func() { done <- readInterleaved(t, client, 3) }()
+	for _, p := range send {
+		rf.ForwardVideoPacket(p)
+	}
+	got := <-done
+
+	for i, want := range []uint32{0, 2970, 5940} {
+		if got[i].Timestamp != want {
+			t.Errorf("frame %d: ts %d, want %d", i, got[i].Timestamp, want)
+		}
+	}
+}
+
+func TestSourceClockRebasesAcrossWraparound(t *testing.T) {
+	var c sourceClock
+	if got := c.rebase(0xFFFF_FF00, 100); got != 100 {
+		t.Fatalf("first timestamp %d, want 100", got)
+	}
+	if got := c.rebase(0x0000_0100, 100); got != 100+0x200 {
+		t.Fatalf("after wraparound %d, want %d", got, 100+0x200)
+	}
+}

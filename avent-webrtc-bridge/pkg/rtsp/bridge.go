@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"avent-webrtc-bridge/pkg/core"
+	"avent-webrtc-bridge/pkg/imm"
 	"avent-webrtc-bridge/pkg/storage"
 	"avent-webrtc-bridge/pkg/tuya"
 	"avent-webrtc-bridge/pkg/utils"
@@ -41,6 +42,9 @@ type WebRTCBridge struct {
 	mqttClient     *tuya.MQTTClient
 	cameraClient   *tuya.MQTTCameraClient
 	rtpForwarder   *RTPForwarder
+
+	// immSession replaces the PeerConnection for cameras on the imm transport.
+	immSession *imm.Session
 
 	// State
 	connected         bool
@@ -211,6 +215,12 @@ func (wb *WebRTCBridge) Start() error {
 		}
 	}
 
+	// Cameras without WebRTC (SCD860, issue #59) speak Tuya's imm AES/KCP
+	// transport instead; the config says so itself.
+	if wb.mobileClient != nil && webRTCConfig.Result.UsesImm() {
+		return wb.startImm(&webRTCConfig.Result)
+	}
+
 	// Parse skill information (may be empty for direct mode)
 	var skill tuya.Skill
 	if webRTCConfig.Result.Skill != "" {
@@ -279,6 +289,11 @@ func (wb *WebRTCBridge) Stop() {
 		wb.cameraClient.SendDisconnect()
 	}
 
+	if wb.immSession != nil {
+		wb.immSession.Close()
+		wb.immSession = nil
+	}
+
 	// Close peer connection
 	if wb.peerConnection != nil {
 		wb.peerConnection.Close()
@@ -306,6 +321,45 @@ func (wb *WebRTCBridge) IsConnected() bool {
 	wb.mutex.RLock()
 	defer wb.mutex.RUnlock()
 	return wb.connected
+}
+
+// startImm streams a camera over the imm AES/KCP transport. Media arrives as
+// the same H.264 RTP and PCMU audio the WebRTC path produces, so everything
+// after the forwarder is shared. Callers hold wb.mutex.
+func (wb *WebRTCBridge) startImm(config *tuya.WebRTCConfig) error {
+	core.Logger.Info().Msgf("Camera %s uses the imm (AES/KCP) transport", wb.camera.DeviceName)
+	if wb.Talkback {
+		core.Logger.Warn().Msg("Two-way audio is not implemented for imm cameras; streaming without it")
+	}
+
+	localKey, err := wb.mobileClient.GetLocalKey(wb.camera.DeviceID)
+	if err != nil {
+		return fmt.Errorf("failed to get the local key for camera %s: %v", wb.camera.DeviceName, err)
+	}
+
+	signaling := tuya.NewImmSignalingClient(wb.mqttClient, wb.camera.DeviceID, localKey, config.P2PConfig.Session.SessionId)
+	session := imm.NewSession(imm.Config{
+		DeviceID:  wb.camera.DeviceID,
+		UID:       wb.mqttClient.UID(),
+		LocalKey:  localKey,
+		Password:  config.Password,
+		P2PConfig: config.P2PConfig,
+		Audio:     true,
+	}, signaling)
+	session.OnVideo = wb.rtpForwarder.ForwardVideoPacket
+	session.OnAudio = wb.rtpForwarder.ForwardAudioPacket
+	session.OnError = wb.handleError
+	wb.rtpForwarder.SourceTimestamps = true
+
+	if err := session.Start(); err != nil {
+		session.Close()
+		return fmt.Errorf("imm stream for camera %s: %v", wb.camera.DeviceName, err)
+	}
+
+	wb.immSession = session
+	wb.connected = true
+	core.Logger.Info().Msgf("imm stream started for camera: %s", wb.camera.DeviceName)
+	return nil
 }
 
 func (wb *WebRTCBridge) ForwardBackchannelAudioPacket(packet *rtp.Packet) {
