@@ -292,6 +292,25 @@ func (c *MobileSDKClient) GetDeviceInfo(deviceID string) (json.RawMessage, error
 	return c.Call("tuya.m.device.get", "1.0", map[string]string{"devId": deviceID})
 }
 
+// GetLocalKey returns the camera's local key, which the imm transport needs to
+// encrypt its signaling and to log in on channel 0.
+func (c *MobileSDKClient) GetLocalKey(deviceID string) (string, error) {
+	raw, err := c.GetDeviceInfo(deviceID)
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		LocalKey string `json:"localKey"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return "", err
+	}
+	if info.LocalKey == "" {
+		return "", fmt.Errorf("device %s has no local key", deviceID)
+	}
+	return info.LocalKey, nil
+}
+
 type UserInfoResult struct {
 	ID         string `json:"id"`
 	Email      string `json:"email"`

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -19,6 +20,10 @@ type MQTTClient struct {
 	cameras        map[string]*MQTTCameraClient // sessionId -> camera
 	closed         bool
 	Connected      utils.Waiter
+
+	rawMutex    sync.Mutex
+	rawHandlers map[string]map[int]func([]byte) // topic -> handler id -> handler
+	rawNextID   int
 }
 
 type MqttFrameHeader struct {
@@ -138,6 +143,68 @@ func (c *MQTTClient) RemoveCameraClient(sessionId string) {
 		return
 	}
 	delete(c.cameras, sessionId)
+}
+
+// UID is the account uid the client signs signaling messages with.
+func (c *MQTTClient) UID() string {
+	return c.uid
+}
+
+// Subscribe adds a raw subscription next to the WebRTC one and returns a
+// function that removes it again. The imm transport signals on a per-device
+// topic with a binary payload, which the JSON consumer cannot parse, so it
+// brings its own handler. Several handlers may share a topic (two streams of
+// one camera); each filters by its own session id.
+func (c *MQTTClient) Subscribe(topic string, handler func(payload []byte)) (func(), error) {
+	if c.closed {
+		return nil, errors.New("mqtt client is closed")
+	}
+	c.rawMutex.Lock()
+	defer c.rawMutex.Unlock()
+	if c.rawHandlers == nil {
+		c.rawHandlers = make(map[string]map[int]func([]byte))
+	}
+	if _, subscribed := c.rawHandlers[topic]; !subscribed {
+		token := c.mqtt.Subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+			c.rawMutex.Lock()
+			handlers := make([]func([]byte), 0, len(c.rawHandlers[topic]))
+			for _, h := range c.rawHandlers[topic] {
+				handlers = append(handlers, h)
+			}
+			c.rawMutex.Unlock()
+			for _, h := range handlers {
+				h(msg.Payload())
+			}
+		})
+		if token.Wait() && token.Error() != nil {
+			return nil, token.Error()
+		}
+		c.rawHandlers[topic] = make(map[int]func([]byte))
+	}
+	c.rawNextID++
+	id := c.rawNextID
+	c.rawHandlers[topic][id] = handler
+
+	return func() {
+		c.rawMutex.Lock()
+		defer c.rawMutex.Unlock()
+		delete(c.rawHandlers[topic], id)
+		if len(c.rawHandlers[topic]) == 0 {
+			delete(c.rawHandlers, topic)
+			if !c.closed && c.mqtt != nil {
+				c.mqtt.Unsubscribe(topic)
+			}
+		}
+	}, nil
+}
+
+func (c *MQTTClient) Publish(topic string, payload []byte) error {
+	if c.closed {
+		return errors.New("mqtt client is closed")
+	}
+	token := c.mqtt.Publish(topic, 1, false, payload)
+	token.Wait()
+	return token.Error()
 }
 
 func (c *MQTTClient) onConnect(client mqtt.Client) {

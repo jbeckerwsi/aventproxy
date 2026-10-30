@@ -232,6 +232,7 @@ type WebRTCConfig struct {
 	MotoId              string          `json:"motoId"`
 	NodeId              string          `json:"nodeId"`
 	P2PConfig           P2PConfig       `json:"p2pConfig"`
+	Password            string          `json:"password"` // P2P password; the imm login hashes it with the local key
 	ProtocolVersion     string          `json:"protocolVersion"`
 	Skill               string          `json:"skill"`
 	Sub                 bool            `json:"sub"`
@@ -274,6 +275,31 @@ type P2PConfig struct {
 	Auth   string      `json:"auth"`
 	Ices   []ICEServer `json:"ices"`
 	MotoId string      `json:"motoId"`
+
+	// Transmission is "kcp" on cameras that only speak Tuya's proprietary
+	// "imm" AES/KCP transport (SCD860, issue #59). Session is the session the
+	// server mints for such cameras; an imm offer must carry its ICE
+	// credentials and AES key verbatim or the camera never answers. TcpRelay
+	// and Log are echoed into the offer unchanged, as the app does.
+	Transmission string          `json:"transmission,omitempty"`
+	Session      *P2PSession     `json:"session,omitempty"`
+	TcpRelay     json.RawMessage `json:"tcpRelay,omitempty"`
+	Log          json.RawMessage `json:"log,omitempty"`
+}
+
+type P2PSession struct {
+	SessionId   string `json:"sessionId"`
+	AesKey      string `json:"aesKey"`
+	IceUfrag    string `json:"iceUfrag"`
+	IcePassword string `json:"icePassword"`
+	TraceId     string `json:"traceId"`
+}
+
+// UsesImm reports whether a camera must be streamed over the imm AES/KCP
+// transport instead of WebRTC. Both signals come from the config itself, so no
+// model list is needed.
+func (c *WebRTCConfig) UsesImm() bool {
+	return !c.SupportsWebrtc && c.P2PConfig.Transmission == "kcp" && c.P2PConfig.Session != nil
 }
 
 type ICEServer struct {
