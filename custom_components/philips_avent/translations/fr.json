@@ -60,12 +60,14 @@
         "data": {
           "bridge_host": "Hôte du pont",
           "bridge_port": "Port RTSP du pont",
-          "talkback": "Audio bidirectionnel (interphone)"
+          "talkback": "Audio bidirectionnel (interphone)",
+          "lan_addresses": "Adresses LAN des moniteurs"
         },
         "data_description": {
           "bridge_host": "Emplacement où Home Assistant peut joindre le pont WebRTC. Laissez localhost si vous utilisez l'add-on ; indiquez le nom du conteneur ou l'adresse IP si vous exécutez le pont ailleurs vous-même.",
           "bridge_port": "Port sur lequel le pont WebRTC écoute (par défaut : 38554)",
-          "talkback": "Laissez désactivé sauf si un de vos clients parle réellement via le flux. Demander l'audio bidirectionnel à la caméra fait que le moniteur arrête une berceuse en cours et la redémarre depuis le début à la fermeture du flux."
+          "talkback": "Laissez désactivé sauf si un de vos clients parle réellement via le flux. Demander l'audio bidirectionnel à la caméra fait que le moniteur arrête une berceuse en cours et la redémarre depuis le début à la fermeture du flux.",
+          "lan_addresses": "Uniquement si un moniteur se trouve dans un autre sous-réseau ou VLAN que Home Assistant, où il ne peut pas être trouvé automatiquement. Saisissez son adresse IP (séparées par des virgules pour plusieurs moniteurs) et attribuez-lui une adresse fixe sur votre routeur. Les mises à jour en direct et les alertes sonores dépendent de cette connexion."
         }
       }
     }

@@ -12,6 +12,7 @@ from lan_policy import (
     data_stale,
     heartbeat_due,
     is_connection_error,
+    parse_lan_addresses,
     parse_protocol_version,
     reconnect_delay,
     should_reconnect,
@@ -139,3 +140,23 @@ class TestProtocolVersion:
         # session-key negotiation.
         for announced in (3.1, 3.4, 3.5, None):
             assert PROTOCOL_VERSION_DEFAULT in version_candidates(announced)
+
+
+class TestParseLanAddresses:
+    """The LAN addresses option, for monitors that broadcast discovery cannot see."""
+
+    def test_empty(self):
+        assert parse_lan_addresses("") == []
+        assert parse_lan_addresses(None) == []
+        assert parse_lan_addresses(42) == []
+
+    def test_single(self):
+        assert parse_lan_addresses("10.0.40.155") == ["10.0.40.155"]
+
+    def test_separators_and_whitespace(self):
+        assert parse_lan_addresses(" 10.0.40.155, 10.0.40.156;10.0.40.157  10.0.40.158 ") == [
+            "10.0.40.155", "10.0.40.156", "10.0.40.157", "10.0.40.158",
+        ]
+
+    def test_duplicates_dropped_order_kept(self):
+        assert parse_lan_addresses("10.0.0.2,10.0.0.1,10.0.0.2") == ["10.0.0.2", "10.0.0.1"]

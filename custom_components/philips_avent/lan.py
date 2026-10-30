@@ -37,11 +37,13 @@ class TuyaLANClient:
         device_id: str,
         local_key: str,
         on_dps_update: Callable[[dict[str, Any]], None],
+        known_addresses: list[str] | None = None,
     ) -> None:
         self._hass = hass
         self._device_id = device_id
         self._local_key = local_key
         self._on_dps_update = on_dps_update
+        self._known_addresses = list(known_addresses or [])
         self._device: tinytuya.Device | None = None
         self._ip: str | None = None
         self._announced_version: float | None = None
@@ -136,6 +138,19 @@ class TuyaLANClient:
                 return True
             self._ip = None
 
+        # Configured addresses next: discovery cannot see a monitor in another
+        # subnet or VLAN. Only the monitor whose local key matches completes the
+        # handshake, so one list serves every camera of the entry.
+        for address in self._known_addresses:
+            _LOGGER.debug("Trying configured address %s for %s", address, self._device_id)
+            device = await self._connect_at_any_version(address)
+            if device:
+                self._ip = address
+                self._device = device
+                self.connected = True
+                _LOGGER.info("LAN connected to %s at configured address %s", self._device_id, address)
+                return True
+
         # Scan for device IP
         _LOGGER.debug("Scanning LAN for device %s", self._device_id)
         self._ip, announced = await self._discover_device()
@@ -145,7 +160,17 @@ class TuyaLANClient:
             )
             self._announced_version = announced
         if not self._ip:
-            _LOGGER.warning("Device %s not found on LAN", self._device_id)
+            if self._known_addresses:
+                _LOGGER.warning(
+                    "Device %s not found on LAN, nor at the configured addresses %s",
+                    self._device_id, ", ".join(self._known_addresses),
+                )
+            else:
+                _LOGGER.warning(
+                    "Device %s not found on LAN. If it is in another subnet or VLAN than "
+                    "Home Assistant, add its IP address under Configure > LAN addresses",
+                    self._device_id,
+                )
             return False
 
         device = await self._connect_at_any_version(self._ip)

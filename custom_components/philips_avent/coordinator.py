@@ -82,7 +82,7 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         self.sleep_day: dict | None = None
         self._sleep_day_refreshed_at = None
 
-    async def start_lan(self) -> None:
+    async def start_lan(self, known_addresses: list[str] | None = None) -> None:
         if not self._local_key:
             return
         self._lan_client = TuyaLANClient(
@@ -90,6 +90,7 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
             self.camera_id,
             self._local_key,
             self._on_lan_dps_update,
+            known_addresses,
         )
         await self._lan_client.start()
 

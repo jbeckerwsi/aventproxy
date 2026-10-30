@@ -32,6 +32,23 @@ CONNECTION_ERRORS = frozenset({LAN_ERR_CONNECT, LAN_ERR_OFFLINE})
 MAX_PAYLOAD_ERRORS = 3
 
 
+def parse_lan_addresses(value: object) -> list[str]:
+    """The monitor addresses from the LAN addresses option, in order, without duplicates.
+
+    Accepts commas, semicolons and whitespace as separators. Discovery listens for
+    the monitors' UDP broadcasts, which do not cross subnets or VLANs; a listed
+    address is tried directly instead.
+    """
+    if not isinstance(value, str):
+        return []
+    addresses: list[str] = []
+    for part in value.replace(";", ",").replace(" ", ",").split(","):
+        address = part.strip()
+        if address and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
 def is_connection_error(err_code: str | None) -> bool:
     """True when a tinytuya error code means the LAN socket is unusable."""
     return str(err_code or "") in CONNECTION_ERRORS
