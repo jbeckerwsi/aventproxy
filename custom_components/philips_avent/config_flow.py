@@ -20,6 +20,7 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
     CONF_ECODE,
+    CONF_LAN_ADDRESSES,
     CONF_PARTNER,
     CONF_SID,
     CONF_TALKBACK,
@@ -415,6 +416,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
         current_talkback = self.config_entry.options.get(
             CONF_TALKBACK, DEFAULT_TALKBACK
         )
+        current_lan_addresses = self.config_entry.options.get(CONF_LAN_ADDRESSES, "")
 
         return self.async_show_form(
             step_id="init",
@@ -425,6 +427,7 @@ class PhilipsAventOptionsFlowHandler(config_entries.OptionsFlow):
                         int, vol.Range(min=1024, max=65535)
                     ),
                     vol.Optional(CONF_TALKBACK, default=current_talkback): bool,
+                    vol.Optional(CONF_LAN_ADDRESSES, default=current_lan_addresses): str,
                 }
             ),
         )

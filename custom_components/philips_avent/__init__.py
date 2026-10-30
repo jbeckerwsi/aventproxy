@@ -16,6 +16,7 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEVICE_ID,
     CONF_ECODE,
+    CONF_LAN_ADDRESSES,
     CONF_PARTNER,
     CONF_SID,
     CONF_TALKBACK,
@@ -28,6 +29,7 @@ from .const import (
     TUYA_SIGNING_KEY,
 )
 from .coordinator import PhilipsAventCoordinator
+from .lan_policy import parse_lan_addresses
 from .payload import (
     BRIDGE_CONFIG_PREFIX,
     bridge_config_filename,
@@ -234,7 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if local_key:
                 coordinator._local_key = local_key
 
-        await coordinator.start_lan()
+        await coordinator.start_lan(parse_lan_addresses(entry.options.get(CONF_LAN_ADDRESSES)))
         coordinators[cam_id] = coordinator
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {

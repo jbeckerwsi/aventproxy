@@ -155,6 +155,9 @@ DEFAULT_BRIDGE_HOST = "localhost"
 # a playing lullaby and restart it with a fresh timer when the stream closes
 # (issue #72), so listening must not imply talking.
 CONF_TALKBACK = "talkback"
+# Monitor IP addresses to connect to directly, for monitors in another subnet or
+# VLAN than Home Assistant, where broadcast discovery cannot see them.
+CONF_LAN_ADDRESSES = "lan_addresses"
 DEFAULT_TALKBACK = False
 
 
