@@ -16,6 +16,7 @@ Home Assistant integration for Philips Avent SCD973/SCD923 baby monitors, provid
 |---------|-------------|-------------|
 | 📹 Live Video | Camera | 1080p H.264 stream via WebRTC→RTSP bridge |
 | 🌡️ Temperature | Sensor | Room temperature from built-in sensor |
+| 💧 Humidity | Sensor | Relative humidity (SCD860) |
 | 💡 Night Light | Switch + Number | On/off + brightness 1-100% |
 | 🎵 Lullabies | Buttons + Number | Play/pause/stop/next/prev + volume |
 | 🏃 Motion Alert | Switch | Motion detection on/off |
@@ -38,9 +39,16 @@ The integration is model-agnostic (it talks to the Tuya cloud API generically), 
 | SCD643/26 | ✅ Working |
 | SCD971 | ✅ Working |
 | SCD921 | ⚠️ Partial: video works but is intermittent; motion/sound detection and WiFi signal behave inconsistently ([#40](https://github.com/thekoma/aventproxy/issues/40)) |
-| SCD860 | ❓ Requested, not yet confirmed ([#59](https://github.com/thekoma/aventproxy/issues/59)) |
+| SCD860 | ✅ Working: video, audio, temperature, humidity and sound alerts. Night light and lullaby controls follow the device schema and await confirmation. The model has no motion detection; two-way audio is not available ([#59](https://github.com/thekoma/aventproxy/issues/59)) |
 
-Motion and sound alerts do not travel the same way on every model. The SCD973 and SCD923 report them on DPS 250 and 141, while the SCD951 and SCD953 use a timestamped alarm record on DPS 212 instead. Both shapes are handled since 2026.8.0. If your monitor raises an alert the app notifies you about and Home Assistant stays quiet, the log now names the alert Tuya sent, which usually turns the fix into one line.
+Motion and sound alerts do not travel the same way on every model. The SCD973 and SCD923 report them on DPS 250 and 141, while the SCD951 and SCD953 use a timestamped alarm record on DPS 212 instead. Both shapes are handled since 2026.8.0. If your monitor raises an alert the app notifies you about and Home Assistant stays quiet, the log now names the alert Tuya sent, which usually turns the fix into one line. The SCD860 pushes DPS 141 as `"1"` for every sound alert, which is handled as well.
+
+Not every monitor streams over WebRTC. The SCD860 reports `supportsWebrtc: false` in its stream config and expects Tuya's own `imm` transport instead: AES-encrypted KCP over UDP. The bridge reads this from the config and switches transport by itself, so there is nothing to configure and the RTSP URL stays the same. Two things differ from WebRTC cameras:
+
+- Media runs directly between the bridge and the camera on your LAN; the bridge does not use a cloud relay for these cameras. The Home Assistant host must reach the camera over UDP. If the camera sits on an isolated VLAN, allow UDP between the two.
+- Two-way audio (talkback) is not implemented for these cameras. With the option on, the bridge logs a warning and streams without it.
+
+Protocol details are in [WHITEPAPER.md](WHITEPAPER.md) section 17.
 
 Got a model that isn't listed, or one that misbehaves? A [diagnostics dump](docs/reporting-issues.md) is the fastest way to get it mapped.
 
@@ -187,6 +195,7 @@ This integration was built through reverse engineering of the Tuya Mobile SDK AP
 - API signing algorithm (HMAC-SHA256 with composite key)
 - Password + MFA login flow
 - MQTT credential derivation for WebRTC signaling
+- The `imm` (AES/KCP) transport used by cameras without WebRTC
 - 10 documented failures and dead ends
 
 ## For Developers
@@ -218,7 +227,9 @@ Found a bug or an entity that behaves oddly? See [`docs/reporting-issues.md`](do
 
 The WebRTC bridge (`avent-webrtc-bridge/`) is forked from [tuya-ipc-terminal](https://github.com/seydx/tuya-ipc-terminal) by seydx, which itself uses WebRTC and codec utilities from [go2rtc](https://github.com/AlexxIT/go2rtc) by AlexxIT. The bridge has since diverged significantly with Philips Avent-specific features including RTP timestamp rebasing, SPS/PPS injection, RTSP backchannel audio, and MQTT-based WebRTC signaling via the Tuya Mobile SDK.
 
-Protocol research in `WHITEPAPER.md` sections 14 to 17, covering the WebRTC signaling frames, the native `libThingP2PSDK.so` analysis and the local-signaling path, was contributed by [@leonardpitzu](https://github.com/leonardpitzu) in [#51](https://github.com/thekoma/aventproxy/issues/51) from work on the sibling `aventlocal` project.
+Protocol research in `WHITEPAPER.md` sections 14 to 16 and 18, covering the WebRTC signaling frames, the native `libThingP2PSDK.so` analysis and the local-signaling path, was contributed by [@leonardpitzu](https://github.com/leonardpitzu) in [#51](https://github.com/thekoma/aventproxy/issues/51) from work on the sibling `aventlocal` project.
+
+The `imm` transport client (`avent-webrtc-bridge/pkg/imm/`) was built using two references: the device-side implementation in [TuyaOpen](https://github.com/tuya/TuyaOpen) (`src/tuya_p2p`, Apache-2.0) and [tuya-ipc-p2p-sdk](https://github.com/roquerodrigo/tuya-ipc-p2p-sdk) by roquerodrigo (MIT), a client for the TCP-relay variant of the same transport.
 
 ## License
 

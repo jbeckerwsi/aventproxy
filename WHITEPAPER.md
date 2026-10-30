@@ -27,9 +27,10 @@
 14. [Phase 8: Streaming Path — WebRTC Signaling and Media](#14-phase-8-streaming-path-webrtc-signaling-and-media)
 15. [Phase 9: Native SDK Analysis (`libThingP2PSDK.so`)](#15-phase-9-native-sdk-analysis-libthingp2psdkso)
 16. [Phase 10: The Local-Signaling Path (Zero-WAN)](#16-phase-10-the-local-signaling-path-zero-wan)
-17. [Completed Architecture](#17-completed-architecture)
-18. [Security Considerations](#18-security-considerations)
-19. [Reproducibility Guide](#19-reproducibility-guide)
+17. [Phase 11: The imm Transport in Practice (SCD860)](#17-phase-11-the-imm-transport-in-practice-scd860)
+18. [Completed Architecture](#18-completed-architecture)
+19. [Security Considerations](#19-security-considerations)
+20. [Reproducibility Guide](#20-reproducibility-guide)
 
 ---
 
@@ -48,6 +49,9 @@ This paper documents the complete reverse engineering of the Tuya Mobile SDK API
 - **Local signaling needs no cloud credential at all** (section 16, captured by @leonardpitzu): the
   camera negotiates a stream over its own TCP 6668 session, with the `localKey` as the only
   cloud-derived secret and `smartlife.m.rtc.config.get` not required
+- **Cameras without WebRTC stream over Tuya's `imm` AES/KCP transport** (section 17, SCD860): signaling
+  runs on a per-device MQTT topic in a binary envelope, and the camera encrypts both directions with
+  the offer key
 
 **Result:** Full autonomous API access from Python/Go, suitable for Home Assistant integration with a config flow identical to the vendor app's login (email → password → MFA code from email).
 
@@ -1089,7 +1093,109 @@ points at Tuya's push-notification service. That has not been reverse engineered
 - **The 904 frames have a concrete mechanism.** The camera's `STATUS` pushes arrive as `{"protocol":4,"t":…,"data":{"dps":{…}}}` behind a **15-byte 3.5 version header**. A decoder that only knows 3.1 through 3.4 falls through to hex on them, and tinytuya constructed with `version=3.3` reports them as unparseable, which is exactly the `Unexpected Payload from Device` seen on #62.
 - **Local control is the user-facing prize, not local streaming.** With the camera's WAN cut, streaming kept working while control did not: the app reported the camera offline and switch changes never applied. A correctly negotiated local session should let `set_dps` keep working with no internet, which is a visible win independent of the signaling work.
 
-## 17. Completed Architecture
+## 17. Phase 11: The imm Transport in Practice (SCD860)
+
+*Worked out on an SCD860 (firmware 200.183.181.12, product id `hduoyookoe1b3in0`) for [issue #59](https://github.com/thekoma/aventproxy/issues/59). Sections 14 to 16 describe `imm` as captured between the app and a camera. This section records what a client has to send to get a stream out of it, and where the camera departs from the two reference implementations used: TuyaOpen's device side (`src/tuya_p2p`) and tuya-ipc-p2p-sdk, a client for the TCP-relay variant on MJPEG cameras. Code: `avent-webrtc-bridge/pkg/imm/`, `pkg/tuya/envelope.go`, `pkg/tuya/immSignaling.go`.*
+
+### Detecting an imm camera
+
+The SCD860 has no WebRTC. Its `smartlife.m.rtc.config.get` response says so and carries a session minted by the server:
+
+```jsonc
+{ "supportsWebrtc": false,
+  "password": "<p2p password>",              // channel 0 login, below
+  "p2pConfig": { "transmission": "kcp",
+                 "session": { "sessionId": "...", "aesKey": "<hex>",
+                              "iceUfrag": "...", "icePassword": "...", "traceId": "..." },
+                 "ices": [...], "tcpRelay": {...}, "log": {...} } }
+```
+
+The bridge streams over `imm` when all three hold (`WebRTCConfig.UsesImm()` in `pkg/tuya/api.go`). There is no model list. The `localKey` comes from `tuya.m.device.get`, which the bridge calls itself.
+
+### Signaling: the per-device topic and the 2.2 envelope
+
+The JSON route of section 14 does not work for `imm`. An offer published to `/av/moto/<motoId>/u/<devId>` gets no answer; with `mode: "imm"` and `auth` set, the server answers `disconnect` with `close_reason: 97`. The camera answers only on its own topics:
+
+```
+publish   → smart/mb/out/<devId>
+subscribe ← smart/mb/in/<devId>
+
+payload = "2.2" | crc32(rest) BE | seq u32 BE | source[4]
+          | AES-128-ECB(localKey, PKCS#7({"data": ..., "protocol": <n>, "t": <unix s>}))
+```
+
+The CRC covers everything after the CRC field. The app sends a signal query (protocol 22, `{"reqType":"sigQry"}`) ahead of the offer; the bridge does the same. Offer, answer, candidates and disconnect are protocol 302 with the header and `msg` shape of section 16 (`path: "mqtt"`, `security_level: 3`, `p2p_skill: 1635`, `msg.token`, `msg.tcp_token` and `msg.log` echoed from the config).
+
+### The offer must carry the server's session
+
+The camera does not answer an offer carrying client-generated ICE credentials or key. Session id, `ice-ufrag`, `ice-pwd` and `aes-key` are taken verbatim from `p2pConfig.session`:
+
+```
+m=application 9 imm 6001
+a=ice-ufrag:<session.iceUfrag>
+a=ice-pwd:<session.icePassword>
+a=aes-key:<session.aesKey>
+a=rtpmap:6001 AES/KCP 330
+```
+
+The answer carries the camera's own ufrag, pwd and `aes-key`, then candidates trickle on the same topic.
+
+### ICE: the camera controls
+
+The camera is the ICE **controlling** agent even though it answers. The client is controlled: it answers the camera's binding requests and takes the pair the camera nominates with `USE-CANDIDATE`. The bridge also sends its own binding requests to the camera's candidates. They nominate nothing, but they open stateful firewalls on the way. This was verified with the camera on a guest VLAN and the client on another. The nominated pair used the camera's host candidate in testing, so media stays on the LAN. The client needs UDP reachability to the camera.
+
+The camera installs its keys when its nominating check completes. Records sent before that are acknowledged and then dropped, which stalls channel 0. The bridge waits 300 ms after nomination.
+
+### Datagrams and records
+
+```
+UDP datagram = KCP segment(s) of one conversation (stock 24-byte LE header)
+             | HMAC-SHA1(key, segments)                  (20 bytes, security level 3)
+KCP payload  = record = IV[16] (random) | AES-128-CBC(key, PKCS#7(plaintext))
+```
+
+Conversation 0 carries login and commands, 1 video, 2 audio.
+
+**Key quirk.** The SCD860 encrypts and tags in **both** directions with the **offer** key. The key in its answer is never used. Both references use the answer key for camera-to-client traffic. A wrong key still passes the PKCS#7 check about once in 256 records, so a bridge that only checked padding would latch onto the wrong key now and then. The bridge settles the key on the first record whose padding is a full block, and keeps the answer key only as a fallback for firmware that follows the references.
+
+### Channel 0: login and start
+
+| # | Record | Content |
+|---|--------|---------|
+| 1 | Login, 104 bytes | mark `0x12345678`, request id, `"admin"`, `hex(md5(password + "||" + localKey))` |
+| 2 | Protocol version | command 10 |
+| 3 | Play | `IO_CTRL_VIDEO` (6), op 0 |
+| 4 | Camera audio on | `IO_CTRL_VIDEO` (6), op 4 |
+
+`password` is the field from `rtc.config.get`, not the account password. All fields are little-endian u32. A clarity command is deliberately not sent: clarity changes the camera's encoder state for every viewer, the phone app included.
+
+### Media units
+
+Channels 1 and 2 carry a byte stream of units, independent of record boundaries:
+
+```
+request_id u32 | reserved u32 | time_ms u64 | ext_len i32 | reserved u32    (24 bytes, LE)
+extension[ext_len]   8 bytes on video I-frames: type 1, width, height, fps
+rtp_len u32 | RTP packet
+```
+
+**Video** is H.264 Main, 1280×720 at 30 fps, an IDR every second, RTP payload type 96 with single NAL units and FU-A. Two quirks need fixing before a standard RTP stack sees the packets:
+
+- The X (extension) bit is set on P-frame packets that carry no header extension. A standard parser reads payload bytes as an extension. The bridge clears the bit.
+- Access unit delimiter NALs carry the marker bit, which ends the frame before its slices arrive. The bridge drops them and renumbers the sequence.
+
+**Audio** is RTP payload type 99 carrying raw 16-bit little-endian PCM, 8 kHz mono, 50 ms per packet. The bridge converts it to G.711 µ-law, which is what the RTSP SDP already advertises for a camera that reports no audio skill.
+
+KCP delivers frames in bursts. Stamping RTP with the wall clock on arrival gave several frames the same timestamp, so for `imm` the forwarder keeps the camera's RTP timestamps rebased to zero (`RTPForwarder.SourceTimestamps` in `pkg/rtsp/forwarder.go`).
+
+### Result and limits
+
+The stream is up about 2.2 s after the RTSP request. `ffmpeg` reading the bridge's RTSP URL received 448 to 450 frames in 15 s, with continuous PCMU audio.
+
+- **Talkback is not implemented** for `imm` cameras. With it enabled the bridge logs a warning and streams without it.
+- **Multi-viewer side effect, observed and not yet explained.** When a session that requested video ends, the camera's shared encoder drops to about 11 fps for the remaining viewers (the I-frame interval goes from 1.0 to 2.77 s with the same 30-frame GOP) until a new session sends play. This was measured with two bridge sessions. Ending with a signaling `disconnect`, with a video stop command first, or by going silent all trigger it; going silent only delays it to the camera's timeout, about 28 s later. A session that connects without sending play does not. The official app has been seen to freeze its video for a while when another client started or stopped a session, then recover by itself.
+
+## 18. Completed Architecture
 
 With the streaming path mapped, the end-to-end local pipeline is:
 
@@ -1099,7 +1205,7 @@ cloud login + smartlife.m.rtc.config.get   (one-time; motoId, auth, ICE servers,
         ▼
 pluggable signaling transport
    ├─ CloudMqttSignaling   offer/answer over Tuya MQTT          ✅ implemented
-   └─ LanSignaling         offer/answer over the SDK LAN socket  🚧 pending the section 16 capture
+   └─ LanSignaling         offer/answer over TCP 6668 (cmd 32)   🚧 wire format captured in section 16
         │
         ▼
 aiortc PeerConnection (DTLS-SRTP, H.264)  ← direct-LAN host ICE pair, media stays local
@@ -1108,11 +1214,13 @@ aiortc PeerConnection (DTLS-SRTP, H.264)  ← direct-LAN host ICE pair, media st
 RTSP re-publish (ffmpeg/go2rtc)  →  Home Assistant / VLC
 ```
 
-The reference implementation lives in the sibling `aventlocal` project; its `SignalingTransport` ABC is the seam that lets `LanSignaling` slot in behind the same interface once the section 16 capture is done, with the media→RTSP pipeline unchanged. Because login + `rtc.config.get` is the *only* remaining cloud touch, caching that config (or serving it locally) removes even that step — yielding true zero-internet operation.
+The reference implementation lives in the sibling `aventlocal` project; its `SignalingTransport` ABC is the seam that lets `LanSignaling` slot in behind the same interface now that section 16 documents the wire format, with the media→RTSP pipeline unchanged. Because login + `rtc.config.get` is the *only* remaining cloud touch, caching that config (or serving it locally) removes even that step — yielding true zero-internet operation.
+
+Cameras on the `imm` transport (section 17) take a different branch. This project's bridge replaces the PeerConnection step with its own AES/KCP client (`avent-webrtc-bridge/pkg/imm/`) and signals over the per-device MQTT topics; the RTSP side is shared. For these cameras the offer must carry the session that `rtc.config.get` mints, so whether a cached config can be reused is untested.
 
 ---
 
-## 18. Security Considerations
+## 19. Security Considerations
 
 ### Responsible Disclosure
 
@@ -1133,7 +1241,7 @@ This research targets personal devices owned by the researcher. No third-party s
 
 ---
 
-## 19. Reproducibility Guide
+## 20. Reproducibility Guide
 
 ### Decrypting a local session from a packet capture
 
