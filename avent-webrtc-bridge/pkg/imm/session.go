@@ -94,6 +94,12 @@ type Session struct {
 	nomOnce    sync.Once
 	closeOnce  sync.Once
 
+	fps        *fpsGuard
+	lastTs     uint32
+	haveTs     bool
+	restarts   int
+	restartGap time.Duration
+
 	convs map[uint32]*conversation
 	video unitParser
 	audio unitParser
@@ -114,6 +120,7 @@ func NewSession(cfg Config, signaling Signaling) *Session {
 		convs:      make(map[uint32]*conversation),
 
 		stallTimeout: stallTimeout,
+		restartGap:   50 * time.Millisecond,
 	}
 }
 
@@ -412,6 +419,7 @@ func (s *Session) openConversations() {
 	s.convs[convVideo] = newConversation(convVideo, write, s.onVideoRecord)
 	s.convs[convAudio] = newConversation(convAudio, write, s.onAudioRecord)
 	s.lastVideo = time.Now()
+	s.fps = newFPSGuard()
 	s.mutex.Unlock()
 }
 
@@ -494,10 +502,59 @@ func (s *Session) onVideoRecord(record []byte) {
 	s.mutex.Unlock()
 	for _, unit := range s.video.feed(plain) {
 		if pkt := s.vpack.packet(unit.rtp); pkt != nil {
+			s.watchFrameRate(pkt.Timestamp)
 			s.firstOnce.Do(func() { close(s.firstVideo) })
 			if s.OnVideo != nil {
 				s.OnVideo(pkt)
 			}
+		}
+	}
+}
+
+// watchFrameRate feeds the camera's frame intervals to the fps guard and
+// restarts live video when the camera has fallen back to its idle rate because
+// another viewer stopped. Called before OnVideo, which may rewrite timestamps.
+func (s *Session) watchFrameRate(ts uint32) {
+	s.mutex.Lock()
+	if s.haveTs && ts == s.lastTs {
+		s.mutex.Unlock()
+		return
+	}
+	interval := time.Duration(int32(ts-s.lastTs)) * time.Second / 90000
+	first := !s.haveTs
+	s.lastTs, s.haveTs = ts, true
+	restart := !first && s.fps != nil && s.fps.observe(interval)
+	if restart {
+		s.restarts++
+	}
+	n := s.restarts
+	s.mutex.Unlock()
+
+	if restart {
+		core.Logger.Info().Msgf("imm: the camera fell back to its idle frame rate (another viewer stopped); restarting live video (#%d)", n)
+		go s.restartLive()
+	}
+}
+
+func (s *Session) restartLive() {
+	for i, msg := range restartSequence() {
+		if i > 0 {
+			select {
+			case <-time.After(s.restartGap):
+			case <-s.ctx.Done():
+				return
+			}
+		}
+		record, err := encryptRecord(s.offerKey, msg)
+		if err != nil {
+			return
+		}
+		s.mutex.Lock()
+		conv := s.convs[convControl]
+		s.mutex.Unlock()
+		if err := conv.send(record); err != nil {
+			core.Logger.Debug().Err(err).Msg("imm: restart command failed")
+			return
 		}
 	}
 }

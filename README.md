@@ -47,6 +47,7 @@ Not every monitor streams over WebRTC. The SCD860 reports `supportsWebrtc: false
 
 - Media runs directly between the bridge and the camera on your LAN; the bridge does not use a cloud relay for these cameras. The Home Assistant host must reach the camera over UDP. If the camera sits on an isolated VLAN, allow UDP between the two.
 - Two-way audio (talkback) is not implemented for these cameras. With the option on, the bridge logs a warning and streams without it.
+- The camera streams to at most two clients at a time, and the Philips app counts as one. When any viewer stops, the camera drops to about 11 fps for everyone still watching. The bridge notices this on its own stream and restarts its video, which brings every viewer back to 30 fps after a gap of a second or two.
 
 Protocol details are in [WHITEPAPER.md](WHITEPAPER.md) section 17.
 

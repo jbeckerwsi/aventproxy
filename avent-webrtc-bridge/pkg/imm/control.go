@@ -16,6 +16,7 @@ const (
 	cmdIOCtrlVideo     = 6
 
 	opVideoPlay = 0
+	opVideoStop = 3
 	opAudioOn   = 4
 )
 
@@ -25,6 +26,7 @@ const (
 	reqIDVersion   = 0
 	reqIDPlay      = 0x00010003
 	reqIDAudioOn   = 0x00010005
+	reqIDStop      = 0x00010006
 	clarityDefault = 0
 )
 
@@ -67,4 +69,14 @@ func startSequence(password, localKey string, audio bool) [][]byte {
 		seq = append(seq, command(reqIDAudioOn, cmdIOCtrlVideo, opAudioOn, 0, opAudioOn))
 	}
 	return seq
+}
+
+// restartSequence stops and replays live video in the running session, which
+// the camera takes as a fresh start (see fps.go). The play keeps the original
+// request id, so media units keep their request_id.
+func restartSequence() [][]byte {
+	return [][]byte{
+		command(reqIDStop, cmdIOCtrlVideo, opVideoStop, clarityDefault, opVideoStop),
+		command(reqIDPlay, cmdIOCtrlVideo, opVideoPlay, clarityDefault, opVideoPlay),
+	}
 }
